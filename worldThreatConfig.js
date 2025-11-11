@@ -13,7 +13,7 @@ const threatTemplates = [
   {
     id: "wt_ito",
     name: "The Spiral's Embrace",
-    description: "Reality twists into impossible spirals.",
+    description: "Intel from Kurouzu-cho, Japan, has ceased. Final fragmented reports spoke of a town obsessed... with spirals. This is not a localized hysteria; it's a memetic contagion warping reality. Your team must enter the town, find the epicenter of the curse, and break it before it consumes the entire continent."",
     zone: "Asia",
     theme: "JUNJI_ITO",
     primaryStat: "Occultism",
@@ -24,7 +24,7 @@ const threatTemplates = [
   {
     id: "wt_re",
     name: "The Tyrant Hunt",
-    description: "A bio-weapon stalks the ruins of a city.",
+    description: ""The advanced Tyrant specimen that escaped The Hive has been tracked to the Arklay Mountains. It's adapting, regenerating, and becoming more powerful. If it reaches a populated area, the results will be catastrophic. Intercept and neutralize it, permanently."",
     zone: "North America",
     theme: "RESIDENT_EVIL",
     primaryStat: "Courage",
@@ -35,7 +35,7 @@ const threatTemplates = [
   {
     id: "wt_lovecraft",
     name: "The Star-Spawn's Call",
-    description: "Distant stars whisper to unstable minds.",
+    description: "A coastal town in France is reporting mass hysteria and nightmares of a sunken city. A psychic resonance is growing, heralding the awakening of something ancient. Disrupt the ritual before it completes."",
     zone: "Europe",
     theme: "LOVECRAFTIAN",
     primaryStat: "Occultism",
@@ -46,7 +46,7 @@ const threatTemplates = [
   {
     id: "wt_conjuring",
     name: "The Perron Farmhouse",
-    description: "A haunted farmhouse draws in the unwary.",
+    description: "A remote farmhouse in Rhode Island is experiencing a violent poltergeist manifestation, escalating at an alarming rate. This is no simple haunting; it's a demonic infestation seeking a host. Your team must perform a full exorcism before the entity latches onto the family.",
     zone: "North America",
     theme: "FOLKLORE",
     primaryStat: "Occultism",
