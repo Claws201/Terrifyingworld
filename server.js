@@ -230,7 +230,7 @@ app.get("/world-threats/:instanceId", (req, res) => {
  * {
  *   "playerId": "player-123",
  *   "directorName": "Director Alice",
- *   "agents": [ AgentSnapshot, ... ]
+ *   "agents": [ AgentSnapshot, ... ]  // max 3
  * }
  */
 app.post("/world-threats/:instanceId/assign", (req, res) => {
@@ -245,6 +245,13 @@ app.post("/world-threats/:instanceId/assign", (req, res) => {
     return res
       .status(400)
       .json({ error: "Missing 'playerId' or 'agents' in body" });
+  }
+
+  // Enforce max 3 agents per player on this threat
+  if (agents.length > 3) {
+    return res.status(400).json({
+      error: "You can only assign up to 3 agents to a single world threat.",
+    });
   }
 
   const safeDirectorName = directorName || "Unknown Director";
