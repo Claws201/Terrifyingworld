@@ -95,24 +95,28 @@ function tickThreat(threat) {
 
   if (elapsedSeconds <= 0) return threat;
 
-  // --- Health & sanity drain: 1 point per minute ---
-  // 1 per minute = 1/60 per second
-  const damagePerSecond = 1 / 60;
-  const damageAmount = elapsedSeconds * damagePerSecond;
+// --- Health & sanity drain ---
+// Health: 1 per minute = 1/60 per second
+// Sanity: 2 per minute = 2/60 per second
+const healthDamagePerSecond = 1 / 60;
+const sanityDamagePerSecond = 2 / 60;
 
-  if (damageAmount > 0) {
-    for (const assignment of threat.assignedAgents) {
-      for (const agent of assignment.agents) {
-        if (typeof agent.health === "number") {
-          agent.health = Math.max(0, agent.health - damageAmount);
-        }
-        if (typeof agent.sanity === "number") {
-          agent.sanity = Math.max(0, agent.sanity - damageAmount);
-        }
+const healthDamage = elapsedSeconds * healthDamagePerSecond;
+const sanityDamage = elapsedSeconds * sanityDamagePerSecond;
+
+if (healthDamage > 0 || sanityDamage > 0) {
+  for (const assignment of threat.assignedAgents) {
+    for (const agent of assignment.agents) {
+      if (typeof agent.health === "number") {
+        agent.health = Math.max(0, agent.health - healthDamage);
+      }
+      if (typeof agent.sanity === "number") {
+        agent.sanity = Math.max(0, agent.sanity - sanityDamage);
       }
     }
   }
-  // --- End health & sanity drain ---
+}
+// --- End health & sanity drain ---
 
   // Remove agents whose HP or SAN has dropped to 0
   for (const assignment of threat.assignedAgents) {
