@@ -1,10 +1,11 @@
 // server.js
 // World Threat backend with:
-// - difficulty easing: diff 10 = current baseline; lower diffs are easier (faster progress + gentler drain)
-// - per-agent worldThreatModifiers (power/health/sanity multipliers)
-// - single active threat + 30 min cooldown before next spawn
-// - archives of finished threats with reward eligibility map
-// - admin endpoints: /world-threats/admin/finish and /world-threats/admin/cycle
+// - Difficulty easing: diff 10 = baseline; lower diffs are easier (faster progress + gentler drain)
+// - Per-agent worldThreatModifiers (power/health/sanity multipliers)
+// - Single active threat + 30 min cooldown after clear/expire
+// - Archives finished threats + reward eligibility map
+// - Admin endpoints: /world-threats/admin/finish and /world-threats/admin/cycle
+// - Back-compat routes: /world-threats/:instanceId/assign|unassign
 
 const express = require("express");
 const cors = require("cors");
@@ -247,7 +248,7 @@ app.get("/world-threats", (_req, res) => {
   res.json(list);
 });
 
-// Assign: up to 3 agents per player
+// Assign: up to 3 agents per player (instance-less endpoint)
 app.post("/world-threats/assign", (req, res) => {
   const { playerId, directorName, agents } = req.body || {};
   if (!activeThreat || activeThreat.status !== "active") {
@@ -282,7 +283,7 @@ app.post("/world-threats/assign", (req, res) => {
   res.json({ ok: true });
 });
 
-// Unassign a player's agents from the active threat
+// Unassign (instance-less endpoint)
 app.post("/world-threats/unassign", (req, res) => {
   const { playerId } = req.body || {};
   if (!playerId) return res.status(400).json({ error: "Missing playerId" });
@@ -293,7 +294,63 @@ app.post("/world-threats/unassign", (req, res) => {
   res.json({ ok: true });
 });
 
-// Admin: instantly clear current threat
+// ---------- Back-compat routes (instanceId in path) ----------
+
+// Assign with instanceId in path
+app.post("/world-threats/:instanceId/assign", (req, res) => {
+  const { instanceId } = req.params;
+  if (!activeThreat || activeThreat.status !== "active") {
+    return res.status(400).json({ error: "No active threat to assign to." });
+  }
+  if (activeThreat.instanceId !== instanceId) {
+    return res.status(404).json({ error: "Threat not found or not active." });
+  }
+  const { playerId, directorName, agents } = req.body || {};
+  if (!playerId || !directorName || !Array.isArray(agents)) {
+    return res.status(400).json({ error: "Missing playerId, directorName, or agents." });
+  }
+
+  const limited = agents.slice(0, 3);
+  const snapshots = limited.map((a) => ({
+    agentId: a.agentId,
+    name: a.name,
+    portraitUrl: a.portraitUrl,
+    courage: a.courage || 0,
+    investigation: a.investigation || 0,
+    occultism: a.occultism || 0,
+    health: a.health ?? 30,
+    sanity: a.sanity ?? 30,
+    skills: Array.isArray(a.skills) ? a.skills : [],
+    statModifiers: a.statModifiers || {},
+    worldThreatModifiers: a.worldThreatModifiers || {},
+  }));
+
+  const bundles = activeThreat.assignedAgents || [];
+  const idx = bundles.findIndex((b) => b.playerId === playerId);
+  const bundle = { playerId, directorName, agents: snapshots };
+  if (idx >= 0) bundles[idx] = bundle; else bundles.push(bundle);
+  activeThreat.assignedAgents = bundles;
+
+  return res.json({ ok: true });
+});
+
+// Unassign with instanceId in path
+app.post("/world-threats/:instanceId/unassign", (req, res) => {
+  const { instanceId } = req.params;
+  const { playerId } = req.body || {};
+  if (!playerId) return res.status(400).json({ error: "Missing playerId" });
+  if (!activeThreat || activeThreat.instanceId !== instanceId) {
+    return res.status(404).json({ error: "Threat not found or not active." });
+  }
+  activeThreat.assignedAgents = (activeThreat.assignedAgents || []).filter(
+    (b) => b.playerId !== playerId
+  );
+  return res.json({ ok: true });
+});
+
+// ---------------- Admin endpoints ----------------
+
+// Instantly clear current threat
 app.post("/world-threats/admin/finish", (_req, res) => {
   if (!activeThreat) return res.status(400).json({ error: "No active threat." });
   activeThreat.progress = 100;
@@ -302,7 +359,7 @@ app.post("/world-threats/admin/finish", (_req, res) => {
   res.json({ ok: true });
 });
 
-// Admin: cycle (expire current if any, then spawn new now; ignores cooldown)
+// Cycle (expire current if any, then spawn new now; ignores cooldown)
 app.post("/world-threats/admin/cycle", (_req, res) => {
   if (activeThreat) {
     activeThreat.status = "expired";
