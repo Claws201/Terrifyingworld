@@ -2,7 +2,7 @@
 
 // Base progress % per second per point of agent power.
 // Increased so each agent contributes more.
-const WORLD_THREAT_BASE_PROGRESS_RATE = 0.002;
+const WORLD_THREAT_BASE_PROGRESS_RATE = 0.001;
 
 // Default lifetime of a world threat in minutes
 // 3 hours = 180 minutes
