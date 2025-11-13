@@ -1,21 +1,27 @@
 // backend/worldThreatConfig.js
 
-// Same meaning as in your game:
-// "Base progress % per second per point of agent power"
-const WORLD_THREAT_BASE_PROGRESS_RATE = 0.0003;
+// Base progress % per second per point of agent power.
+// Increased so each agent contributes more.
+const WORLD_THREAT_BASE_PROGRESS_RATE = 0.001;
 
-// Default lifetime of a world threat in minutes (for expiry timer)
-const DEFAULT_LIFETIME_MINUTES = 60 * 24; // 24 hours
+// Default lifetime of a world threat in minutes
+// 3 hours = 180 minutes
+const DEFAULT_LIFETIME_MINUTES = 180;
 
-// Templates: mirror your WORLD_THREATS_LIBRARY
+// IMPORTANT NOTES WHEN EDITING TEXT:
+// - Always use straight double quotes "like this", not “smart quotes”.
+// - If you need an apostrophe, prefer double quotes outside:
+//   description: "The world's edge is fraying."
+// - Make sure every object in the array is separated by a comma.
+
 const threatTemplates = [
   {
     id: "wt_ito",
     name: "The Spiral's Embrace",
-    description: "Reality twists into impossible spirals.",
+    description: "Reality twists into impossible spirals, dragging minds and architecture into impossible geometries.",
     zone: "Asia",
     theme: "JUNJI_ITO",
-    primaryStat: "Occultism",          // used for agent power
+    primaryStat: "Occultism",
     skills: ["Psychology", "Research"],
     difficulty: 8,
     lifetimeMinutes: DEFAULT_LIFETIME_MINUTES,
@@ -23,7 +29,7 @@ const threatTemplates = [
   {
     id: "wt_re",
     name: "The Tyrant Hunt",
-    description: "A bio-weapon stalks the ruins of a city.",
+    description: "A bio-weapon stalks the ruins of a quarantined city, and every hour without containment spawns new horrors.",
     zone: "North America",
     theme: "RESIDENT_EVIL",
     primaryStat: "Courage",
@@ -34,7 +40,7 @@ const threatTemplates = [
   {
     id: "wt_lovecraft",
     name: "The Star-Spawn's Call",
-    description: "Distant stars whisper to unstable minds.",
+    description: "Distant stars hum a frequency only the unstable can hear. The longer it plays, the more minds it corrodes.",
     zone: "Europe",
     theme: "LOVECRAFTIAN",
     primaryStat: "Occultism",
@@ -45,7 +51,7 @@ const threatTemplates = [
   {
     id: "wt_conjuring",
     name: "The Perron Farmhouse",
-    description: "A haunted farmhouse draws in the unwary.",
+    description: "A farmhouse that should have been abandoned decades ago still hosts something that refuses to leave.",
     zone: "North America",
     theme: "FOLKLORE",
     primaryStat: "Occultism",
@@ -55,9 +61,10 @@ const threatTemplates = [
   },
 ];
 
-// Helper to create live instance from template
+// Create a live instance from a template
 function createThreatInstance(template) {
   const now = new Date();
+
   const expiresAt = new Date(
     now.getTime() +
       (template.lifetimeMinutes ?? DEFAULT_LIFETIME_MINUTES) * 60 * 1000
@@ -80,7 +87,7 @@ function createThreatInstance(template) {
     assignedAgents: [], // [{ playerId, directorName, agents: AgentSnapshot[] }]
     createdAt: now.toISOString(),
     lastTick: now.toISOString(),
-    expiresAt, // ISO timestamp when this threat expires
+    expiresAt,
   };
 }
 
