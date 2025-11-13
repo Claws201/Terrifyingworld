@@ -1,9 +1,10 @@
 // server.js
-// World Threat backend with difficulty scaling.
-// - diff 10 = baseline; lower diffs are easier (faster progress + gentler drain)
+// World Threat backend with:
+// - Difficulty scaling (diff 10 = baseline; lower diffs are easier: faster progress + gentler drain)
 // - Per-agent worldThreatModifiers (power/health/sanity multipliers)
 // - Single active threat + 30 min cooldown after clear/expire
 // - Archives with reward eligibility
+// - Contribution tracking (power-seconds) + heatmap endpoints
 // - Admin endpoints: /world-threats/admin/finish and /world-threats/admin/cycle
 // - Back-compat routes: /world-threats/:instanceId/assign|unassign
 // - Full input sanitization + NaN guards
@@ -111,6 +112,11 @@ function computeAgentPower(agent, threat) {
   return basePower;
 }
 
+// Round a timestamp down to the start of its minute
+function minuteBucket(tsMs) {
+  return Math.floor(tsMs / 60000) * 60000;
+}
+
 function decorateThreat(t) {
   const now = Date.now();
   const expTs = new Date(t.expiresAt).getTime();
@@ -134,11 +140,23 @@ function decorateThreat(t) {
     }
   }
 
+  // Small summary of contributions (optional UI helper)
+  const contributionsSummary = t.contributions
+    ? {
+        playerCount: Object.keys(t.contributions.totals || {}).length,
+        topPlayers: Object.entries(t.contributions.totals || {})
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([playerId, total]) => ({ playerId, total })),
+      }
+    : null;
+
   return {
     ...t,
     secondsToExpiry,
     etaSecondsToCompletion,
     etaCompletionAt,
+    contributionsSummary,
   };
 }
 
@@ -146,6 +164,8 @@ function decorateThreat(t) {
 function spawnThreat() {
   const tmpl = rngPick(threatTemplates);
   const inst = createThreatInstance(tmpl);
+  // init contribution tracking
+  inst.contributions = { totals: {}, buckets: {} };
   activeThreat = inst;
   lastTickMs = Date.now();
 }
@@ -206,9 +226,15 @@ function tickThreats() {
   const difficultySpeed = getDifficultySpeed(t);
   const difficultyDrainFactor = 1 / difficultySpeed;
 
+  const contribNowBucketIso = new Date(minuteBucket(now)).toISOString();
+  const KEEP_MS = 6 * 60 * 60 * 1000; // keep last 6h of minute buckets
+  const cutoff = now - KEEP_MS;
+
   activeThreat.assignedAgents = (activeThreat.assignedAgents || [])
     .map((bundle) => {
       const updated = [];
+      let bundlePower = 0;
+
       for (const agent of bundle.agents) {
         const mods = agent?.worldThreatModifiers || {};
         const healthMult = toNum(mods.healthLossMultiplier, 1);
@@ -230,9 +256,34 @@ function tickThreats() {
         }
 
         const live = { ...agent, health: newHealth, sanity: newSanity };
-        totalPower += computeAgentPower(live, t);
+        const p = computeAgentPower(live, t);
+        bundlePower += p;
         updated.push(live);
       }
+
+      // Record contribution for this player (power-seconds)
+      if (!activeThreat.contributions) {
+        activeThreat.contributions = { totals: {}, buckets: {} };
+      }
+      const pid = String(bundle.playerId || "unknown");
+      const contrib = bundlePower * elapsedSec;
+
+      activeThreat.contributions.totals[pid] =
+        (activeThreat.contributions.totals[pid] || 0) + contrib;
+
+      if (!activeThreat.contributions.buckets[pid]) {
+        activeThreat.contributions.buckets[pid] = {};
+      }
+      activeThreat.contributions.buckets[pid][contribNowBucketIso] =
+        (activeThreat.contributions.buckets[pid][contribNowBucketIso] || 0) + contrib;
+
+      // prune old minute buckets to bound memory
+      const byMinute = activeThreat.contributions.buckets[pid];
+      for (const k of Object.keys(byMinute)) {
+        if (new Date(k).getTime() < cutoff) delete byMinute[k];
+      }
+
+      totalPower += bundlePower;
       return { ...bundle, agents: updated };
     })
     .filter((b) => b.agents && b.agents.length > 0);
@@ -336,6 +387,37 @@ app.post("/world-threats/:instanceId/unassign", (req, res) => {
     (b) => b.playerId !== playerId
   );
   return res.json(decorateThreat(activeThreat));
+});
+
+// ---------------- Contribution endpoints ----------------
+app.get("/world-threats/contributions/current", (_req, res) => {
+  if (!activeThreat || !activeThreat.contributions) {
+    return res.json({
+      instanceId: activeThreat?.instanceId || null,
+      totals: {},
+      buckets: {},
+    });
+  }
+  res.json({
+    instanceId: activeThreat.instanceId,
+    totals: activeThreat.contributions.totals,
+    buckets: activeThreat.contributions.buckets,
+  });
+});
+
+app.get("/world-threats/:instanceId/contributions", (req, res) => {
+  const { instanceId } = req.params;
+  const src =
+    (activeThreat && activeThreat.instanceId === instanceId) ? activeThreat :
+    finishedThreats.find((t) => t.instanceId === instanceId);
+  if (!src || !src.contributions) {
+    return res.status(404).json({ error: "No contributions for that instance." });
+  }
+  return res.json({
+    instanceId: src.instanceId,
+    totals: src.contributions.totals,
+    buckets: src.contributions.buckets,
+  });
 });
 
 // ---------------- Admin endpoints ----------------
