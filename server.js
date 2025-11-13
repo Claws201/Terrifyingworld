@@ -102,7 +102,7 @@ function computeAgentPower(agent, threat) {
   const have = new Set(Array.isArray(agent?.skills) ? agent.skills : []);
   for (const s of need) if (have.has(s)) skillBonus += 2;
 
-  let basePower = primary * 1.5 + statSum * 0.6 + skillBonus;
+  let basePower = primary * 1.3 + statSum * 0.6 + skillBonus;
 
   const wtMods = agent?.worldThreatModifiers || {};
   const powerMult = toNum(wtMods.powerMultiplier, 1);
