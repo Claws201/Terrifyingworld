@@ -1,375 +1,311 @@
-// server.js
-// World Threat backend with:
-// - Difficulty easing: diff 10 = baseline; lower diffs are easier (faster progress + gentler drain)
-// - Per-agent worldThreatModifiers (power/health/sanity multipliers)
-// - Single active threat + 30 min cooldown after clear/expire
-// - Archives finished threats + reward eligibility map
-// - Admin endpoints: /world-threats/admin/finish and /world-threats/admin/cycle
-// - Back-compat routes: /world-threats/:instanceId/assign|unassign
-
+// backend/server.js
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
-
 const {
   WORLD_THREAT_BASE_PROGRESS_RATE,
-  AGENT_HEALTH_LOSS_PER_MINUTE,
-  AGENT_SANITY_LOSS_PER_MINUTE,
-  COOLDOWN_MINUTES_AFTER_END,
   threatTemplates,
   createThreatInstance,
-} = require(path.join(__dirname, "worldThreatConfig"));
+} = require("./worldThreatConfig");
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
-const PORT = process.env.PORT || 3001;
+// ===== STATE =====
 
-// Defaults if not provided by config
-const WT_BASE_RATE = Number(WORLD_THREAT_BASE_PROGRESS_RATE ?? 0.001); // % per sec per power
-const HP_LOSS_PER_MIN = Number(AGENT_HEALTH_LOSS_PER_MINUTE ?? 1);     // hp/min
-const SAN_LOSS_PER_MIN = Number(AGENT_SANITY_LOSS_PER_MINUTE ?? 2);    // san/min
-const COOLDOWN_MIN = Number(COOLDOWN_MINUTES_AFTER_END ?? 30);
+let activeThreats = [];
+let lastSpawnAt = null;
 
-// In-memory state
-let activeThreat = null;               // current active threat
-let finishedThreats = [];              // archive (cleared/expired)
-let lastTickMs = Date.now();
-let cooldownUntilMs = 0;               // timestamp when next spawn allowed
+// Config – tweak as you like
+const MAX_ACTIVE_THREATS = 2;
+const SPAWN_INTERVAL_MINUTES = 60;
 
-// Helpers
-function rngPick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+// ===== HELPERS =====
+
+function getRandomTemplate() {
+  const index = Math.floor(Math.random() * threatTemplates.length);
+  return threatTemplates[index];
 }
+
+function findThreat(instanceId) {
+  return activeThreats.find((t) => t.instanceId === instanceId);
+}
+
+// Agent snapshot:
+// {
+//   agentId,
+//   name,
+//   courage,
+//   investigation,
+//   occultism,
+//   health,   // current health (number)
+//   sanity,   // current sanity (number)
+//   skills: string[],
+//   statModifiers: { courage, investigation, occultism }
+// }
+function calculateAgentPower(agent, threat) {
+  const primary = threat.primaryStat; // "Courage" | "Investigation" | "Occultism"
+  const key = primary.toLowerCase();  // "courage" / "investigation" / "occultism"
+
+  const baseStat = agent[key] || 0;
+  const modifier = agent.statModifiers?.[key] || 0;
+  const totalStat = baseStat + modifier;
+
+  const hasSkillMatch =
+    Array.isArray(threat.skills) &&
+    Array.isArray(agent.skills) &&
+    agent.skills.some((s) => threat.skills.includes(s));
+
+  const skillMatchBonus = hasSkillMatch ? 1.2 : 1;
+  return totalStat * skillMatchBonus;
+}
+
+function calculateTotalPower(threat) {
+  let total = 0;
+  for (const assignment of threat.assignedAgents) {
+    for (const agent of assignment.agents) {
+      total += calculateAgentPower(agent, threat);
+    }
+  }
+  return total;
+}
+
+function tickThreat(threat) {
+  if (threat.status !== "active") return threat;
+
+  const now = new Date();
+  const last = new Date(threat.lastTick);
+  const elapsedSeconds = (now - last) / 1000;
+
+  // Check expiry
+  if (threat.expiresAt) {
+    const exp = new Date(threat.expiresAt);
+    if (now >= exp && threat.status === "active") {
+      threat.status = "expired";
+      threat.assignedAgents = [];
+      threat.lastTick = now.toISOString();
+      return threat;
+    }
+  }
+
+  if (elapsedSeconds <= 0) return threat;
+
+  // --- Health & sanity drain: 1 point per minute ---
+  // 1 per minute = 1/60 per second
+  const damagePerSecond = 1 / 60;
+  const damageAmount = elapsedSeconds * damagePerSecond;
+
+  if (damageAmount > 0) {
+    for (const assignment of threat.assignedAgents) {
+      for (const agent of assignment.agents) {
+        if (typeof agent.health === "number") {
+          agent.health = Math.max(0, agent.health - damageAmount);
+        }
+        if (typeof agent.sanity === "number") {
+          agent.sanity = Math.max(0, agent.sanity - damageAmount);
+        }
+      }
+    }
+  }
+  // --- End health & sanity drain ---
+
+  const totalPower = calculateTotalPower(threat);
+  if (totalPower <= 0) {
+    threat.lastTick = now.toISOString();
+    return threat;
+  }
+
+  const progressDelta =
+    elapsedSeconds * totalPower * WORLD_THREAT_BASE_PROGRESS_RATE;
+
+  if (progressDelta > 0) {
+    threat.progress = Math.min(100, threat.progress + progressDelta);
+    threat.lastTick = now.toISOString();
+
+    if (threat.progress >= 100) {
+      threat.status = "cleared";
+      threat.assignedAgents = [];
+    }
+  }
+
+  return threat;
+}
+
+function tickAllThreats() {
+  activeThreats = activeThreats.map((t) => tickThreat(t));
+}
+
+function spawnThreatIfNeeded() {
+  const now = new Date();
+  const activeCount = activeThreats.filter((t) => t.status === "active").length;
+
+  if (activeCount >= MAX_ACTIVE_THREATS) return;
+
+  if (lastSpawnAt) {
+    const elapsedMinutes = (now - new Date(lastSpawnAt)) / 60000;
+    if (elapsedMinutes < SPAWN_INTERVAL_MINUTES) return;
+  }
+
+  const template = getRandomTemplate();
+  const instance = createThreatInstance(template);
+  activeThreats.push(instance);
+  lastSpawnAt = now.toISOString();
+
+  console.log("Spawned world threat:", instance.name, instance.instanceId);
+}
+
+function computeEta(threat) {
+  const now = new Date();
+  const totalPower = calculateTotalPower(threat);
+
+  let etaSecondsToCompletion = null;
+  let etaCompletionAt = null;
+
+  if (threat.status === "active" && totalPower > 0 && threat.progress < 100) {
+    const remainingPercent = 100 - threat.progress;
+    const progressPerSecond =
+      totalPower * WORLD_THREAT_BASE_PROGRESS_RATE;
+
+    if (progressPerSecond > 0) {
+      etaSecondsToCompletion = remainingPercent / progressPerSecond;
+      const etaDate = new Date(
+        now.getTime() + etaSecondsToCompletion * 1000
+      );
+      etaCompletionAt = etaDate.toISOString();
+    }
+  }
+
+  let secondsToExpiry = null;
+  if (threat.expiresAt && threat.status === "active") {
+    const exp = new Date(threat.expiresAt);
+    if (exp > now) {
+      secondsToExpiry = (exp - now) / 1000;
+    } else {
+      secondsToExpiry = 0;
+    }
+  }
+
+  return { etaSecondsToCompletion, etaCompletionAt, secondsToExpiry };
+}
+
+function threatWithEta(threat) {
+  const eta = computeEta(threat);
+  return {
+    ...threat,
+    ...eta,
+  };
+}
+
+// ===== ROUTES =====
+
+app.get("/", (req, res) => {
+  res.send("World Threat server is running");
+});
+
+app.get("/world-threats", (req, res) => {
+  spawnThreatIfNeeded();
+  tickAllThreats();
+  const result = activeThreats.map(threatWithEta);
+  res.json(result);
+});
+
+app.get("/world-threats/:instanceId", (req, res) => {
+  spawnThreatIfNeeded();
+  tickAllThreats();
+
+  const threat = findThreat(req.params.instanceId);
+  if (!threat) return res.status(404).json({ error: "Not found" });
+
+  res.json(threatWithEta(threat));
+});
 
 /**
- * Difficulty easing:
- * 10 -> 1.0x (no change)
- * <10 -> faster progress & gentler drain
- * EASY_SCALAR controls how much faster at low difficulties.
+ * Assign agents to a threat.
+ *
+ * Body:
+ * {
+ *   "playerId": "player-123",
+ *   "directorName": "Director Alice",
+ *   "agents": [
+ *     {
+ *       "agentId": "A1",
+ *       "name": "Agent Carter",
+ *       "courage": 3,
+ *       "investigation": 2,
+ *       "occultism": 1,
+ *       "health": 100,
+ *       "sanity": 80,
+ *       "skills": ["Research", "Firearms"],
+ *       "statModifiers": { "courage": 1, "investigation": 0, "occultism": 2 }
+ *     },
+ *     ...
+ *   ]
+ * }
  */
-function getDifficultySpeed(threat) {
-  const d = Math.max(1, Math.min(10, Number(threat.difficulty) || 10));
-  const EASY_SCALAR = 0.10; // diff 1 => 1 + (9 * 0.10) = 1.9x
-  return 1 + (10 - d) * EASY_SCALAR;
-}
-
-/** Compute one agent’s contribution ("power") */
-function computeAgentPower(agent, threat) {
-  const c = agent.courage || 0;
-  const i = agent.investigation || 0;
-  const o = agent.occultism || 0;
-
-  let primary = o;
-  if (threat.primaryStat === "Courage") primary = c;
-  else if (threat.primaryStat === "Investigation") primary = i;
-
-  const statSum = c + i + o;
-
-  let skillBonus = 0;
-  const need = Array.isArray(threat.skills) ? threat.skills : [];
-  const have = new Set(Array.isArray(agent.skills) ? agent.skills : []);
-  for (const s of need) if (have.has(s)) skillBonus += 2;
-
-  let basePower = primary * 1.5 + statSum * 0.6 + skillBonus;
-
-  // Optional specialization multiplier from client
-  const wtMods = agent.worldThreatModifiers || {};
-  const powerMult =
-    typeof wtMods.powerMultiplier === "number" ? wtMods.powerMultiplier : 1;
-
-  basePower *= powerMult;
-  return Math.max(0, basePower);
-}
-
-/** Spawn a new threat from templates */
-function spawnThreat() {
-  const tmpl = rngPick(threatTemplates);
-  const inst = createThreatInstance(tmpl);
-  activeThreat = inst;
-  lastTickMs = Date.now();
-}
-
-/** Build reward eligibility (players who had agents assigned) */
-function buildEligibilityMap(threat) {
-  const map = {};
-  (threat.assignedAgents || []).forEach((a) => {
-    if (!a || !a.playerId) return;
-    map[a.playerId] = true;
-  });
-  return map;
-}
-
-/** End active threat: mark status & archive, start cooldown */
-function endActiveThreat(status) {
-  if (!activeThreat) return;
-  const ended = {
-    ...activeThreat,
-    status,
-    eligibleForRewardByPlayerId: buildEligibilityMap(activeThreat),
-    endedAt: new Date().toISOString(),
-  };
-  finishedThreats.unshift(ended);
-  activeThreat = null;
-  cooldownUntilMs = Date.now() + COOLDOWN_MIN * 60 * 1000;
-  // trim archive to last 50
-  if (finishedThreats.length > 50) {
-    finishedThreats = finishedThreats.slice(0, 50);
-  }
-}
-
-/** Main tick loop */
-function tickThreats() {
-  const now = Date.now();
-  const elapsedSec = (now - lastTickMs) / 1000;
-  if (elapsedSec <= 0) return;
-  lastTickMs = now;
-
-  // No active threat: auto-spawn when cooldown passed
-  if (!activeThreat) {
-    if (now >= cooldownUntilMs) {
-      spawnThreat();
-    }
-    return;
-  }
-
-  const t = activeThreat;
-
-  // Expiry
-  const expTs = new Date(t.expiresAt).getTime();
-  if (now >= expTs && t.status === "active") {
-    activeThreat.status = "expired";
-    endActiveThreat("expired");
-    return;
-  }
-  if (t.status !== "active") return;
-
-  // Drain & power
-  let totalPower = 0;
-  const difficultySpeed = getDifficultySpeed(t);
-  const difficultyDrainFactor = 1 / difficultySpeed;
-
-  activeThreat.assignedAgents = (activeThreat.assignedAgents || [])
-    .map((bundle) => {
-      const updated = [];
-      for (const agent of bundle.agents) {
-        const mods = agent.worldThreatModifiers || {};
-        const healthMult =
-          typeof mods.healthLossMultiplier === "number"
-            ? mods.healthLossMultiplier
-            : 1;
-        const sanityMult =
-          typeof mods.sanityLossMultiplier === "number"
-            ? mods.sanityLossMultiplier
-            : 1;
-
-        const baseHp = (HP_LOSS_PER_MIN * elapsedSec) / 60;
-        const baseSan = (SAN_LOSS_PER_MIN * elapsedSec) / 60;
-
-        const hpLoss = baseHp * difficultyDrainFactor * healthMult;
-        const sanLoss = baseSan * difficultyDrainFactor * sanityMult;
-
-        let newHealth = (agent.health ?? 0) - hpLoss;
-        let newSanity = (agent.sanity ?? 0) - sanLoss;
-
-        if (newHealth <= 0 || newSanity <= 0) {
-          // downed/broken: drop from list
-          continue;
-        }
-
-        const live = { ...agent, health: newHealth, sanity: newSanity };
-        totalPower += computeAgentPower(live, t);
-        updated.push(live);
-      }
-      return { ...bundle, agents: updated };
-    })
-    .filter((b) => b.agents && b.agents.length > 0);
-
-  // Progress
-  const progressDelta = elapsedSec * totalPower * WT_BASE_RATE * difficultySpeed;
-  activeThreat.progress = Math.min(100, (activeThreat.progress || 0) + progressDelta);
-  activeThreat.lastTick = new Date().toISOString();
-
-  // Cleared
-  if (activeThreat.progress >= 100) {
-    activeThreat.status = "cleared";
-    endActiveThreat("cleared");
-  }
-}
-
-setInterval(tickThreats, 1000);
-
-// --------- API ---------
-
-// Health check
-app.get("/", (_req, res) => {
-  res.send("World Threat server online");
-});
-
-// List: active first, then archives (newest first)
-app.get("/world-threats", (_req, res) => {
-  function decorate(t) {
-    const now = Date.now();
-    const expTs = new Date(t.expiresAt).getTime();
-    const secondsToExpiry = Math.max(0, Math.floor((expTs - now) / 1000));
-
-    let etaSecondsToCompletion = null;
-    let etaCompletionAt = null;
-
-    if (t.status === "active") {
-      let totalPower = 0;
-      (t.assignedAgents || []).forEach((b) =>
-        (b.agents || []).forEach((a) => {
-          totalPower += computeAgentPower(a, t);
-        })
-      );
-      const diffSpeed = getDifficultySpeed(t);
-      const perSec = totalPower * WT_BASE_RATE * diffSpeed;
-      if (perSec > 0 && t.progress < 100) {
-        etaSecondsToCompletion = (100 - t.progress) / perSec;
-        etaCompletionAt = new Date(now + etaSecondsToCompletion * 1000).toISOString();
-      }
-    }
-
-    return {
-      ...t,
-      secondsToExpiry,
-      etaSecondsToCompletion,
-      etaCompletionAt,
-    };
-  }
-
-  const list = [];
-  if (activeThreat) list.push(decorate(activeThreat));
-  finishedThreats.forEach((ft) => list.push(decorate(ft)));
-
-  list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  res.json(list);
-});
-
-// Assign: up to 3 agents per player (instance-less endpoint)
-app.post("/world-threats/assign", (req, res) => {
-  const { playerId, directorName, agents } = req.body || {};
-  if (!activeThreat || activeThreat.status !== "active") {
-    return res.status(400).json({ error: "No active threat to assign to." });
-  }
-  if (!playerId || !directorName || !Array.isArray(agents)) {
-    return res.status(400).json({ error: "Missing playerId, directorName, or agents." });
-  }
-
-  const limited = agents.slice(0, 3);
-  const snapshots = limited.map((a) => ({
-    agentId: a.agentId,
-    name: a.name,
-    portraitUrl: a.portraitUrl,
-    courage: a.courage || 0,
-    investigation: a.investigation || 0,
-    occultism: a.occultism || 0,
-    health: a.health ?? 30,
-    sanity: a.sanity ?? 30,
-    skills: Array.isArray(a.skills) ? a.skills : [],
-    statModifiers: a.statModifiers || {},
-    worldThreatModifiers: a.worldThreatModifiers || {}, // power/health/sanity multipliers
-  }));
-
-  const bundles = activeThreat.assignedAgents || [];
-  const idx = bundles.findIndex((b) => b.playerId === playerId);
-  const bundle = { playerId, directorName, agents: snapshots };
-  if (idx >= 0) bundles[idx] = bundle;
-  else bundles.push(bundle);
-  activeThreat.assignedAgents = bundles;
-
-  res.json({ ok: true });
-});
-
-// Unassign (instance-less endpoint)
-app.post("/world-threats/unassign", (req, res) => {
-  const { playerId } = req.body || {};
-  if (!playerId) return res.status(400).json({ error: "Missing playerId" });
-  if (!activeThreat) return res.json({ ok: true });
-  activeThreat.assignedAgents = (activeThreat.assignedAgents || []).filter(
-    (b) => b.playerId !== playerId
-  );
-  res.json({ ok: true });
-});
-
-// ---------- Back-compat routes (instanceId in path) ----------
-
-// Assign with instanceId in path
 app.post("/world-threats/:instanceId/assign", (req, res) => {
-  const { instanceId } = req.params;
-  if (!activeThreat || activeThreat.status !== "active") {
-    return res.status(400).json({ error: "No active threat to assign to." });
-  }
-  if (activeThreat.instanceId !== instanceId) {
-    return res.status(404).json({ error: "Threat not found or not active." });
-  }
-  const { playerId, directorName, agents } = req.body || {};
-  if (!playerId || !directorName || !Array.isArray(agents)) {
-    return res.status(400).json({ error: "Missing playerId, directorName, or agents." });
+  const threat = findThreat(req.params.instanceId);
+  if (!threat) return res.status(404).json({ error: "Not found" });
+  if (threat.status !== "active") {
+    return res.status(400).json({ error: "Threat not active" });
   }
 
-  const limited = agents.slice(0, 3);
-  const snapshots = limited.map((a) => ({
-    agentId: a.agentId,
-    name: a.name,
-    portraitUrl: a.portraitUrl,
-    courage: a.courage || 0,
-    investigation: a.investigation || 0,
-    occultism: a.occultism || 0,
-    health: a.health ?? 30,
-    sanity: a.sanity ?? 30,
-    skills: Array.isArray(a.skills) ? a.skills : [],
-    statModifiers: a.statModifiers || {},
-    worldThreatModifiers: a.worldThreatModifiers || {},
-  }));
-
-  const bundles = activeThreat.assignedAgents || [];
-  const idx = bundles.findIndex((b) => b.playerId === playerId);
-  const bundle = { playerId, directorName, agents: snapshots };
-  if (idx >= 0) bundles[idx] = bundle; else bundles.push(bundle);
-  activeThreat.assignedAgents = bundles;
-
-  return res.json({ ok: true });
-});
-
-// Unassign with instanceId in path
-app.post("/world-threats/:instanceId/unassign", (req, res) => {
-  const { instanceId } = req.params;
-  const { playerId } = req.body || {};
-  if (!playerId) return res.status(400).json({ error: "Missing playerId" });
-  if (!activeThreat || activeThreat.instanceId !== instanceId) {
-    return res.status(404).json({ error: "Threat not found or not active." });
+  const { playerId, directorName, agents } = req.body;
+  if (!playerId || !Array.isArray(agents)) {
+    return res
+      .status(400)
+      .json({ error: "Missing 'playerId' or 'agents' in body" });
   }
-  activeThreat.assignedAgents = (activeThreat.assignedAgents || []).filter(
-    (b) => b.playerId !== playerId
+
+  const safeDirectorName = directorName || "Unknown Director";
+
+  // Apply progress & damage up to now before changing assignments
+  tickThreat(threat);
+
+  // Remove previous assignment for this player
+  threat.assignedAgents = threat.assignedAgents.filter(
+    (a) => a.playerId !== playerId
   );
-  return res.json({ ok: true });
+
+  threat.assignedAgents.push({
+    playerId,
+    directorName: safeDirectorName,
+    agents,
+  });
+
+  threat.lastTick = new Date().toISOString();
+
+  res.json(threatWithEta(threat));
 });
 
-// ---------------- Admin endpoints ----------------
+/**
+ * Unassign this player's agents from a threat.
+ *
+ * Body: { "playerId": "player-123" }
+ */
+app.post("/world-threats/:instanceId/unassign", (req, res) => {
+  const threat = findThreat(req.params.instanceId);
+  if (!threat) return res.status(404).json({ error: "Not found" });
 
-// Instantly clear current threat
-app.post("/world-threats/admin/finish", (_req, res) => {
-  if (!activeThreat) return res.status(400).json({ error: "No active threat." });
-  activeThreat.progress = 100;
-  activeThreat.status = "cleared";
-  endActiveThreat("cleared");
-  res.json({ ok: true });
-});
-
-// Cycle (expire current if any, then spawn new now; ignores cooldown)
-app.post("/world-threats/admin/cycle", (_req, res) => {
-  if (activeThreat) {
-    activeThreat.status = "expired";
-    endActiveThreat("expired");
+  const { playerId } = req.body;
+  if (!playerId) {
+    return res.status(400).json({ error: "Missing 'playerId' in body" });
   }
-  cooldownUntilMs = 0;
-  spawnThreat();
-  res.json({ ok: true, instanceId: activeThreat.instanceId });
+
+  // Apply progress & damage up to now before changing assignments
+  tickThreat(threat);
+
+  threat.assignedAgents = threat.assignedAgents.filter(
+    (a) => a.playerId !== playerId
+  );
+
+  threat.lastTick = new Date().toISOString();
+
+  res.json(threatWithEta(threat));
 });
 
+// ===== START SERVER =====
+
+const PORT = 4000;
 app.listen(PORT, () => {
-  console.log(`World Threat server listening on port ${PORT}`);
+  console.log(`World Threat backend running at http://localhost:${PORT}`);
 });
