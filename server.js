@@ -14,11 +14,13 @@ app.use(express.json());
 // ===== IN-MEMORY STATE =====
 
 let activeThreats = [];
-let lastSpawnAt = null;
+// When the last threat was CLEARED or EXPIRED.
+// Used to enforce a 30-minute wait before spawning the next one.
+let lastThreatEndAt = null;
 
 // Config – tweak as you like
-const MAX_ACTIVE_THREATS = 2;
-const SPAWN_INTERVAL_MINUTES = 60;
+const MAX_ACTIVE_THREATS = 1;       // only 1 active threat at a time
+const SPAWN_INTERVAL_MINUTES = 30;  // wait 30 minutes after a threat ends
 
 // ===== HELPER FUNCTIONS =====
 
@@ -85,6 +87,8 @@ function tickThreat(threat) {
       threat.status = "expired";
       threat.assignedAgents = [];
       threat.lastTick = now.toISOString();
+      // mark when this threat ended, so we can enforce a cooldown
+      lastThreatEndAt = now.toISOString();
       return threat;
     }
   }
@@ -110,6 +114,19 @@ function tickThreat(threat) {
   }
   // --- End health & sanity drain ---
 
+  // Remove agents whose HP or SAN has dropped to 0
+  for (const assignment of threat.assignedAgents) {
+    assignment.agents = assignment.agents.filter(
+      (agent) =>
+        (typeof agent.health !== "number" || agent.health > 0) &&
+        (typeof agent.sanity !== "number" || agent.sanity > 0)
+    );
+  }
+  // Remove assignments that now have no agents left
+  threat.assignedAgents = threat.assignedAgents.filter(
+    (assignment) => assignment.agents.length > 0
+  );
+
   const totalPower = calculateTotalPower(threat);
   if (totalPower <= 0) {
     threat.lastTick = now.toISOString();
@@ -125,7 +142,12 @@ function tickThreat(threat) {
 
     if (threat.progress >= 100) {
       threat.status = "cleared";
-      threat.assignedAgents = [];
+      // IMPORTANT: keep assignedAgents so the frontend
+      // can see who contributed and give rewards.
+      // threat.assignedAgents stays as-is.
+
+      // threat successfully cleared – start cooldown from now
+      lastThreatEndAt = now.toISOString();
     }
   }
 
@@ -140,17 +162,22 @@ function spawnThreatIfNeeded() {
   const now = new Date();
   const activeCount = activeThreats.filter((t) => t.status === "active").length;
 
+  // Only 1 active threat at a time
   if (activeCount >= MAX_ACTIVE_THREATS) return;
 
-  if (lastSpawnAt) {
-    const elapsedMinutes = (now - new Date(lastSpawnAt)) / 60000;
-    if (elapsedMinutes < SPAWN_INTERVAL_MINUTES) return;
+  // If we've had a threat end, enforce a 30-minute cooldown
+  if (lastThreatEndAt) {
+    const elapsedMinutes = (now - new Date(lastThreatEndAt)) / 60000;
+    if (elapsedMinutes < SPAWN_INTERVAL_MINUTES) {
+      return; // still cooling down
+    }
   }
 
+  // Either this is the first threat ever,
+  // or the cooldown has expired – spawn a new one.
   const template = getRandomTemplate();
   const instance = createThreatInstance(template);
   activeThreats.push(instance);
-  lastSpawnAt = now.toISOString();
 
   console.log("Spawned world threat:", instance.name, instance.instanceId);
 }
