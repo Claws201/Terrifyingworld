@@ -2,23 +2,19 @@
 
 // Base progress % per second per point of agent power.
 // Increased so each agent contributes more.
-const WORLD_THREAT_BASE_PROGRESS_RATE = 0.001;
+const WORLD_THREAT_BASE_PROGRESS_RATE = 0.002;
 
 // Default lifetime of a world threat in minutes
 // 3 hours = 180 minutes
 const DEFAULT_LIFETIME_MINUTES = 180;
 
-// IMPORTANT NOTES WHEN EDITING TEXT:
-// - Always use straight double quotes "like this", not “smart quotes”.
-// - If you need an apostrophe, prefer double quotes outside:
-//   description: "The world's edge is fraying."
-// - Make sure every object in the array is separated by a comma.
-
+// Templates: mirror your WORLD_THREATS_LIBRARY (simplified version here)
 const threatTemplates = [
   {
     id: "wt_ito",
     name: "The Spiral's Embrace",
-    description: "Reality twists into impossible spirals, dragging minds and architecture into impossible geometries.",
+    description:
+      "Intel from Kurouzu-cho, Japan, has ceased. Final fragmented reports spoke of a town obsessed... with spirals. This is not a localized hysteria; it's a memetic contagion warping reality. Your team must enter the town, find the epicenter of the curse, and break it before it consumes the entire continent.",
     zone: "Asia",
     theme: "JUNJI_ITO",
     primaryStat: "Occultism",
@@ -29,7 +25,8 @@ const threatTemplates = [
   {
     id: "wt_re",
     name: "The Tyrant Hunt",
-    description: "A bio-weapon stalks the ruins of a quarantined city, and every hour without containment spawns new horrors.",
+    description:
+      "The advanced Tyrant specimen that escaped The Hive has been tracked to the Arklay Mountains. It's adapting, regenerating, and becoming more powerful. If it reaches a populated area, the results will be catastrophic. Intercept and neutralize it, permanently.",
     zone: "North America",
     theme: "RESIDENT_EVIL",
     primaryStat: "Courage",
@@ -40,7 +37,8 @@ const threatTemplates = [
   {
     id: "wt_lovecraft",
     name: "The Star-Spawn's Call",
-    description: "Distant stars hum a frequency only the unstable can hear. The longer it plays, the more minds it corrodes.",
+    description:
+      "A coastal town in France is reporting mass hysteria and nightmares of a sunken city. A psychic resonance is growing, heralding the awakening of something ancient. Disrupt the ritual before it completes.",
     zone: "Europe",
     theme: "LOVECRAFTIAN",
     primaryStat: "Occultism",
@@ -51,7 +49,8 @@ const threatTemplates = [
   {
     id: "wt_conjuring",
     name: "The Perron Farmhouse",
-    description: "A farmhouse that should have been abandoned decades ago still hosts something that refuses to leave.",
+    description:
+      "A remote farmhouse in Rhode Island is experiencing a violent poltergeist manifestation, escalating at an alarming rate. This is no simple haunting; it's a demonic infestation seeking a host. Your team must perform a full exorcism before the entity latches onto the family.",
     zone: "North America",
     theme: "FOLKLORE",
     primaryStat: "Occultism",
